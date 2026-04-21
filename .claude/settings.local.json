@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x \"/Users/maksimpopov/екшфтпду туцы/setup.sh\")",
+      "Bash(chmod +x /Users/maksimpopov/news_feed/run_qwen.sh)",
+      "Bash(pip install *)",
+      "Bash(python -c \"import feedparser\")",
+      "Bash(pip show *)",
+      "Bash(conda info *)",
+      "Bash(pyenv versions *)",
+      "Bash(/opt/miniconda3/bin/pip install *)"
+    ]
+  }
+}

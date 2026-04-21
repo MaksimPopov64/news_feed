@@ -1,0 +1,702 @@
+import { useState, useRef, useEffect } from 'react';
+
+// ============================================================
+//  ТРИАНГУЛЯЦИЯ — личный компрессор новостей
+//  Берёт тему, пересекает источники, возвращает доверительную картину.
+// ============================================================
+
+const CLUSTER_META = {
+  western_mainstream:   { label: 'Западный мейнстрим',  short: 'W-MSM',  ink: '#2C4A6B' },
+  russian:              { label: 'Российские',          short: 'RU',     ink: '#8B2E2A' },
+  chinese:              { label: 'Китайские',           short: 'CN',     ink: '#A66A1F' },
+  primary_official:     { label: 'Первичные / офиц.',   short: 'PRIM',   ink: '#3B5E3C' },
+  specialist_industry:  { label: 'Отраслевые',          short: 'SPEC',   ink: '#4A4464' },
+  alternative_critical: { label: 'Альт. / критич.',     short: 'ALT',    ink: '#6B5028' },
+  regional:             { label: 'Региональные',        short: 'REG',    ink: '#2A5E5E' },
+  other:                { label: 'Прочее',              short: 'OTH',    ink: '#5A5A5A' },
+};
+
+const FLAG_LABELS = {
+  emotional_appeal:     'Апелляция к эмоции',
+  omitted_context:      'Выпущенный контекст',
+  false_causation:      'Ложная причинность',
+  cherry_picking:       'Выборочные данные',
+  anecdotal_evidence:   'Единичный случай как система',
+  loaded_language:      'Оценочная лексика',
+  unnamed_sources:      'Анонимные источники',
+  stale_info:           'Устаревшая информация',
+  viral_distortion:     'Искажение при репосте',
+  false_equivalence:    'Ложная эквивалентность',
+  other:                'Прочее',
+};
+
+const EXAMPLES = [
+  'Мираторг и обвинения в жестокости к скоту',
+  'Пошлины США на европейские товары 2026',
+  'Забастовка фермеров в Нидерландах',
+  'Эпидемия птичьего гриппа H5N1 у коров',
+  'Санкции против российских СПГ-проектов',
+];
+
+const SYSTEM_PROMPT = `Ты — строгий непартийный аналитик новостей для внимательного читателя, который хочет избежать коленно-рефлекторных реакций на вирусный контент.
+
+МЕТОДОЛОГИЯ:
+1. Проведи 3-6 поисков по теме с РАЗНЫХ углов. Намеренно ищи:
+   - Западный мейнстрим (Reuters, AP, BBC, NYT, Guardian, FT, DW, Bloomberg)
+   - Российские источники (разные полюса: ТАСС, РИА, Ведомости, Meduza, iStories, Новая газета)
+   - Китайские (Xinhua, SCMP, Global Times)
+   - Первичные источники (официальные заявления, отчёты, данные регуляторов, пресс-релизы)
+   - Отраслевые / специализированные издания
+   - Региональные / локальные
+   - Критические / расследовательские
+2. Перекрёстно проверь ключевые факты.
+3. Обрати внимание на ДАТЫ — что актуально сейчас vs что раскопали из архивов.
+4. Отдели задокументированное от интерпретации и эмоции.
+
+ВОЗВРАЩАЙ ТОЛЬКО валидный JSON (никакого текста до/после, никаких код-блоков), по схеме:
+
+{
+  "headline": "Нейтральное 1-предложение резюме сути",
+  "context": "2-4 предложения необходимого контекста (предыстория, почему это всплыло сейчас)",
+  "established": [
+    {
+      "claim": "Утверждение, которое реально подтверждено пересечением источников",
+      "confidence": число от 40 до 99,
+      "sources_count": сколько независимых источников это подтверждают,
+      "source_types": ["western_mainstream","primary_official", ...] (из enum кластеров)
+    }
+  ],
+  "contested": [
+    {
+      "claim": "Суть спорного момента",
+      "versions": [
+        {
+          "view": "Версия A со своей аргументацией",
+          "who_says": "Кто придерживается",
+          "cluster": "один из ключей кластеров",
+          "plausibility": число 10-90
+        }
+      ]
+    }
+  ],
+  "actors": [
+    {
+      "name": "Конкретное лицо/организация/страна",
+      "role": "Что они делают в этой истории",
+      "interests": "Что они выигрывают или теряют — материально, политически, репутационно",
+      "reliability": "Насколько им стоит доверять в ЭТОМ конкретном сюжете и почему"
+    }
+  ],
+  "framings": [
+    {
+      "cluster": "ключ кластера",
+      "narrative": "Как они рамкуют историю",
+      "emphasis": "Что подчёркивают",
+      "omissions": "Что недоговаривают или вообще не упоминают"
+    }
+  ],
+  "manipulation_flags": [
+    {
+      "type": "ключ из: emotional_appeal, omitted_context, false_causation, cherry_picking, anecdotal_evidence, loaded_language, unnamed_sources, stale_info, viral_distortion, false_equivalence, other",
+      "description": "Что именно за приём используется",
+      "example": "Конкретный пример из материалов",
+      "severity": число 1-5
+    }
+  ],
+  "bottom_line": "Что внимательному читателю реально стоит заключить. 3-5 предложений. Без эвфемизмов, но с честной неопределённостью. Если возмущение оправдано — скажи так. Если раздуто — тоже скажи.",
+  "open_questions": [
+    "Конкретный вопрос, на который пока нет ответа"
+  ],
+  "action_guidance": "Если читатель думает принять решение (бойкот, голосование, инвестиция и т.п.) — что реально следует делать и чего НЕ делать на основе текущих данных. 1-3 предложения."
+}
+
+ПРАВИЛА КАЛИБРОВКИ УВЕРЕННОСТИ:
+- 90-99%: документировано несколькими независимыми источниками + первичные данные
+- 70-89%: сходятся несколько источников, но есть нюансы
+- 55-69%: основной нарратив держится, но детали разнятся
+- 40-54%: только одна сторона, непроверено, или устаревшее
+
+Не фальши-балансируй фактические вопросы («обе стороны правы»). Но разоблачай нарративный фрейминг со всех сторон. Лучше честные 65% с объяснением, чем ложные 95%.`;
+
+const FraunBrand = () => (
+  <span style={{ fontFamily: '"Fraunces", serif', fontVariationSettings: '"opsz" 144, "wght" 700, "SOFT" 50' }}>
+    ТРИАНГУЛЯЦИЯ
+  </span>
+);
+
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [raw, setRaw] = useState(null);
+  const [showRaw, setShowRaw] = useState(false);
+  const [elapsedStage, setElapsedStage] = useState(0);
+  const intervalRef = useRef(null);
+
+  useEffect(() => {
+    // Inject fonts once
+    if (!document.getElementById('trng-fonts')) {
+      const link = document.createElement('link');
+      link.id = 'trng-fonts';
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,0..100&family=Source+Serif+4:opsz,wght@8..60,300..700&family=JetBrains+Mono:wght@300;400;500;700&display=swap';
+      document.head.appendChild(link);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (loading) {
+      setElapsedStage(0);
+      intervalRef.current = setInterval(() => setElapsedStage(s => s + 1), 1000);
+    } else {
+      clearInterval(intervalRef.current);
+    }
+    return () => clearInterval(intervalRef.current);
+  }, [loading]);
+
+  const runAnalysis = async (topic) => {
+    const t = (topic ?? query).trim();
+    if (!t) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setRaw(null);
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 8000,
+          messages: [
+            {
+              role: "user",
+              content: `${SYSTEM_PROMPT}\n\n=== ТЕМА ДЛЯ АНАЛИЗА ===\n${t}\n\nСделай поиски и верни JSON согласно схеме. Текущая дата: ${new Date().toISOString().slice(0,10)}.`
+            }
+          ],
+          tools: [{ type: "web_search_20250305", name: "web_search" }]
+        })
+      });
+
+      if (!response.ok) {
+        const txt = await response.text();
+        throw new Error(`API вернул ${response.status}: ${txt.slice(0,300)}`);
+      }
+
+      const data = await response.json();
+      setRaw(data);
+
+      const textPieces = data.content
+        .filter(b => b.type === 'text')
+        .map(b => b.text)
+        .join('\n');
+
+      const cleaned = textPieces.replace(/```json|```/g, '').trim();
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace  = cleaned.lastIndexOf('}');
+      if (firstBrace === -1 || lastBrace === -1) {
+        throw new Error('Не удалось найти JSON в ответе модели.');
+      }
+      const parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+      setResult(parsed);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ============================================================
+  //  RENDER
+  // ============================================================
+
+  return (
+    <div style={{
+      background: '#F4EFE4',
+      color: '#1A1815',
+      minHeight: '100vh',
+      fontFamily: '"Source Serif 4", Georgia, serif',
+      backgroundImage: `
+        radial-gradient(rgba(26,24,21,0.04) 1px, transparent 1px),
+        radial-gradient(rgba(26,24,21,0.02) 1px, transparent 1px)
+      `,
+      backgroundSize: '3px 3px, 11px 11px',
+      backgroundPosition: '0 0, 1px 1px',
+    }}>
+      <style>{`
+        .trng-serif { font-family: "Source Serif 4", Georgia, serif; }
+        .trng-display { font-family: "Fraunces", serif; font-variation-settings: "opsz" 144, "wght" 600, "SOFT" 50; letter-spacing: -0.01em; }
+        .trng-mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-feature-settings: "ss02", "zero"; }
+        .trng-caps { font-family: "JetBrains Mono", ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.18em; font-weight: 500; }
+        .trng-rule { border-top: 1px solid #1A1815; }
+        .trng-rule-thin { border-top: 0.5px solid rgba(26,24,21,0.35); }
+        .trng-rule-dbl { border-top: 3px double #1A1815; }
+        @keyframes trng-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+        .trng-pulse { animation: trng-pulse 1.4s ease-in-out infinite; }
+        @keyframes trng-fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        .trng-fadeUp { animation: trng-fadeUp 0.5s ease-out both; }
+        .trng-input {
+          background: transparent; border: none; outline: none;
+          width: 100%; font-family: "Fraunces", serif;
+          font-variation-settings: "opsz" 60, "wght" 400;
+          color: #1A1815; font-size: 1.5rem; padding: 0.5rem 0;
+        }
+        .trng-input::placeholder { color: rgba(26,24,21,0.35); font-style: italic; }
+        .trng-chip {
+          font-family: "JetBrains Mono", monospace; font-size: 11px;
+          letter-spacing: 0.08em; padding: 4px 10px;
+          border: 1px solid rgba(26,24,21,0.35); cursor: pointer;
+          transition: all 150ms ease; background: transparent; color: #1A1815;
+        }
+        .trng-chip:hover { background: #1A1815; color: #F4EFE4; }
+        .trng-btn {
+          font-family: "JetBrains Mono", monospace; font-size: 12px;
+          letter-spacing: 0.2em; text-transform: uppercase;
+          padding: 12px 24px; background: #1A1815; color: #F4EFE4;
+          border: none; cursor: pointer; transition: all 180ms ease;
+        }
+        .trng-btn:hover:not(:disabled) { background: #A63D2A; }
+        .trng-btn:disabled { opacity: 0.5; cursor: wait; }
+      `}</style>
+
+      <div style={{ maxWidth: '1180px', margin: '0 auto', padding: '32px 28px 80px' }}>
+
+        {/* ========== MASTHEAD ========== */}
+        <header>
+          <div className="trng-caps" style={{ fontSize: '10px', display: 'flex', justifyContent: 'space-between', opacity: 0.65 }}>
+            <span>vol. 1 · личный компрессор новостей</span>
+            <span>{new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).toUpperCase()}</span>
+          </div>
+          <div className="trng-rule" style={{ marginTop: 6 }} />
+          <div style={{ textAlign: 'center', padding: '28px 0 20px' }}>
+            <h1 className="trng-display" style={{ fontSize: 'clamp(48px, 7vw, 92px)', margin: 0, lineHeight: 0.95 }}>
+              <FraunBrand />
+            </h1>
+            <div className="trng-caps" style={{ fontSize: '10px', marginTop: '12px', opacity: 0.7 }}>
+              три+ независимых источника · доверительные интервалы · без эмоциональных искажений
+            </div>
+          </div>
+          <div className="trng-rule-dbl" />
+        </header>
+
+        {/* ========== INPUT PANEL ========== */}
+        {!result && !loading && (
+          <section style={{ padding: '48px 0 24px' }}>
+            <div className="trng-caps" style={{ fontSize: '11px', opacity: 0.65, marginBottom: 8 }}>
+              запрос · тема или событие
+            </div>
+            <input
+              className="trng-input"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && runAnalysis()}
+              placeholder="напр. «Забой коров на Мираторге — что реально происходит»"
+              autoFocus
+            />
+            <div className="trng-rule-thin" />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, flexWrap: 'wrap', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {EXAMPLES.map((ex, i) => (
+                  <button key={i} className="trng-chip" onClick={() => { setQuery(ex); runAnalysis(ex); }}>
+                    {ex}
+                  </button>
+                ))}
+              </div>
+              <button className="trng-btn" onClick={() => runAnalysis()} disabled={!query.trim()}>
+                Триангулировать →
+              </button>
+            </div>
+
+            {/* Methodology note */}
+            <div style={{ marginTop: 64, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 32 }}>
+              {[
+                { n: '01', t: 'Поиск с разных углов', d: 'Западный мейнстрим, российские, китайские, отраслевые, первичные — намеренно диверсифицированный пул.' },
+                { n: '02', t: 'Пересечение фактов', d: 'Отделяем задокументированное от интерпретации. Каждое утверждение получает процент уверенности.' },
+                { n: '03', t: 'Разбор акторов', d: 'Кто действует, кому что выгодно, насколько им стоит доверять именно в этом сюжете.' },
+                { n: '04', t: 'Флаги манипуляции', d: 'Эмоциональные апелляции, выпущенный контекст, единичный случай как система — подсвечиваем приёмы.' },
+              ].map(b => (
+                <div key={b.n}>
+                  <div className="trng-mono" style={{ fontSize: 11, opacity: 0.5 }}>{b.n}</div>
+                  <div className="trng-display" style={{ fontSize: 20, marginTop: 4, fontVariationSettings: '"opsz" 60, "wght" 500' }}>{b.t}</div>
+                  <div style={{ fontSize: 14, marginTop: 6, lineHeight: 1.5, opacity: 0.78 }}>{b.d}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ========== LOADING ========== */}
+        {loading && (
+          <section style={{ padding: '80px 0', textAlign: 'center' }}>
+            <div className="trng-caps trng-pulse" style={{ fontSize: 11 }}>
+              триангуляция в процессе
+            </div>
+            <div className="trng-display" style={{ fontSize: 28, marginTop: 18, fontVariationSettings: '"opsz" 60, "wght" 400', fontStyle: 'italic', opacity: 0.85 }}>
+              «{query}»
+            </div>
+            <div className="trng-rule-thin" style={{ margin: '32px auto', maxWidth: 360 }} />
+            <div className="trng-mono" style={{ fontSize: 12, opacity: 0.6, lineHeight: 2 }}>
+              <div>→ запрашиваем западный мейнстрим</div>
+              {elapsedStage > 3 && <div className="trng-fadeUp">→ запрашиваем российские источники</div>}
+              {elapsedStage > 7 && <div className="trng-fadeUp">→ запрашиваем первичные и отраслевые</div>}
+              {elapsedStage > 12 && <div className="trng-fadeUp">→ перекрёстная проверка</div>}
+              {elapsedStage > 18 && <div className="trng-fadeUp">→ разбор акторов и фрейминга</div>}
+              {elapsedStage > 25 && <div className="trng-fadeUp" style={{ opacity: 0.5 }}>→ собираем отчёт (обычно ~30-60с)</div>}
+            </div>
+            <div className="trng-mono" style={{ fontSize: 10, opacity: 0.4, marginTop: 40 }}>
+              t+{elapsedStage}s
+            </div>
+          </section>
+        )}
+
+        {/* ========== ERROR ========== */}
+        {error && !loading && (
+          <section style={{ padding: '40px 0' }}>
+            <div className="trng-caps" style={{ fontSize: 11, color: '#A63D2A' }}>ошибка</div>
+            <div className="trng-rule-thin" style={{ margin: '8px 0 16px', borderColor: '#A63D2A' }} />
+            <div className="trng-mono" style={{ fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{error}</div>
+            <button className="trng-btn" style={{ marginTop: 24 }} onClick={() => { setError(null); setResult(null); }}>
+              Новый запрос
+            </button>
+          </section>
+        )}
+
+        {/* ========== RESULTS ========== */}
+        {result && !loading && (
+          <ResultView
+            result={result}
+            query={query}
+            onReset={() => { setResult(null); setQuery(''); setRaw(null); }}
+            raw={raw}
+            showRaw={showRaw}
+            setShowRaw={setShowRaw}
+          />
+        )}
+
+        <footer style={{ marginTop: 80 }}>
+          <div className="trng-rule-dbl" />
+          <div className="trng-caps" style={{ fontSize: 10, opacity: 0.5, marginTop: 12, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+            <span>модель не всевидяща · всегда читай первоисточники по важным решениям</span>
+            <span>powered by claude + web search</span>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  RESULT VIEW
+// ============================================================
+function ResultView({ result, query, onReset, raw, showRaw, setShowRaw }) {
+  const {
+    headline, context, established = [], contested = [],
+    actors = [], framings = [], manipulation_flags = [],
+    bottom_line, open_questions = [], action_guidance
+  } = result;
+
+  return (
+    <article className="trng-fadeUp" style={{ paddingTop: 32 }}>
+      {/* Topline bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+        <div className="trng-caps" style={{ fontSize: 10, opacity: 0.65 }}>
+          досье № {Math.floor(Math.random() * 9000 + 1000)} · запрос: «{query}»
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="trng-chip" onClick={() => setShowRaw(!showRaw)}>
+            {showRaw ? 'скрыть raw' : 'raw json'}
+          </button>
+          <button className="trng-chip" onClick={onReset}>← новый запрос</button>
+        </div>
+      </div>
+
+      {/* Headline */}
+      <h2 className="trng-display" style={{
+        fontSize: 'clamp(28px, 4.2vw, 48px)',
+        lineHeight: 1.1,
+        margin: 0,
+        fontVariationSettings: '"opsz" 144, "wght" 500',
+      }}>
+        {headline}
+      </h2>
+
+      {context && (
+        <>
+          <div className="trng-rule-thin" style={{ margin: '20px 0 14px' }} />
+          <div style={{ fontSize: 17, lineHeight: 1.55, fontStyle: 'italic', opacity: 0.85, maxWidth: 820 }}>
+            {context}
+          </div>
+        </>
+      )}
+
+      {/* ========== BOTTOM LINE (moved up for scan-first reading) ========== */}
+      {bottom_line && (
+        <div style={{ margin: '40px 0', padding: '28px 32px', background: '#1A1815', color: '#F4EFE4', position: 'relative' }}>
+          <div className="trng-caps" style={{ fontSize: 10, opacity: 0.7 }}>итог</div>
+          <div className="trng-display" style={{
+            fontSize: 'clamp(20px, 2.4vw, 26px)',
+            lineHeight: 1.35,
+            marginTop: 10,
+            fontVariationSettings: '"opsz" 60, "wght" 400',
+          }}>
+            {bottom_line}
+          </div>
+          {action_guidance && (
+            <>
+              <div style={{ borderTop: '1px solid rgba(244,239,228,0.25)', margin: '20px 0 14px' }} />
+              <div className="trng-caps" style={{ fontSize: 10, opacity: 0.7 }}>если принимаешь решение</div>
+              <div style={{ fontSize: 15, lineHeight: 1.55, marginTop: 8, opacity: 0.95 }}>
+                {action_guidance}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ========== ESTABLISHED & CONTESTED (2-col) ========== */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 40, marginTop: 48 }}>
+        {/* Established */}
+        <div>
+          <SectionHead num="I" label="Установленные факты" sub={`${established.length} утв.`} />
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {established.map((e, i) => (
+              <li key={i} style={{ padding: '18px 0', borderBottom: '0.5px solid rgba(26,24,21,0.2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
+                  <span className="trng-mono" style={{ fontSize: 11, opacity: 0.5 }}>{String(i+1).padStart(2, '0')}</span>
+                  <ConfidenceMeter value={e.confidence} />
+                </div>
+                <div style={{ fontSize: 15.5, lineHeight: 1.5 }}>{e.claim}</div>
+                <div style={{ marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span className="trng-mono" style={{ fontSize: 10, opacity: 0.55 }}>
+                    n={e.sources_count ?? '—'}
+                  </span>
+                  {(e.source_types || []).map((st, j) => <ClusterTag key={j} cluster={st} />)}
+                </div>
+              </li>
+            ))}
+            {established.length === 0 && <EmptyRow text="Нет твёрдо установленных фактов." />}
+          </ul>
+        </div>
+
+        {/* Contested */}
+        <div>
+          <SectionHead num="II" label="Оспариваемое" sub={`${contested.length} спор.`} />
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {contested.map((c, i) => (
+              <li key={i} style={{ padding: '18px 0', borderBottom: '0.5px solid rgba(26,24,21,0.2)' }}>
+                <div className="trng-mono" style={{ fontSize: 11, opacity: 0.5, marginBottom: 6 }}>
+                  {String(i+1).padStart(2, '0')}
+                </div>
+                <div className="trng-display" style={{ fontSize: 18, fontVariationSettings: '"opsz" 60, "wght" 500', marginBottom: 12 }}>
+                  {c.claim}
+                </div>
+                {(c.versions || []).map((v, j) => (
+                  <div key={j} style={{ marginTop: 10, paddingLeft: 14, borderLeft: `3px solid ${CLUSTER_META[v.cluster]?.ink || '#888'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                      <ClusterTag cluster={v.cluster} />
+                      <span className="trng-mono" style={{ fontSize: 10, opacity: 0.65 }}>
+                        правдоподобие {v.plausibility}%
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 14, lineHeight: 1.5, marginTop: 6 }}>
+                      <span style={{ opacity: 0.55 }}>{v.who_says}:</span> {v.view}
+                    </div>
+                  </div>
+                ))}
+              </li>
+            ))}
+            {contested.length === 0 && <EmptyRow text="Версии не расходятся существенно." />}
+          </ul>
+        </div>
+      </div>
+
+      {/* ========== ACTORS ========== */}
+      {actors.length > 0 && (
+        <div style={{ marginTop: 64 }}>
+          <SectionHead num="III" label="Действующие лица и интересы" sub={`${actors.length}`} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 24 }}>
+            {actors.map((a, i) => (
+              <div key={i} style={{ padding: '20px 22px', background: 'rgba(26,24,21,0.04)', border: '0.5px solid rgba(26,24,21,0.2)' }}>
+                <div className="trng-display" style={{ fontSize: 20, fontVariationSettings: '"opsz" 60, "wght" 600' }}>
+                  {a.name}
+                </div>
+                <div style={{ fontSize: 13, fontStyle: 'italic', opacity: 0.7, marginTop: 2 }}>{a.role}</div>
+                <div className="trng-rule-thin" style={{ margin: '12px 0' }} />
+                <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                  <span className="trng-caps" style={{ fontSize: 9, opacity: 0.65 }}>интересы → </span>
+                  {a.interests}
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.5, marginTop: 10 }}>
+                  <span className="trng-caps" style={{ fontSize: 9, opacity: 0.65 }}>доверие → </span>
+                  {a.reliability}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ========== FRAMINGS ========== */}
+      {framings.length > 0 && (
+        <div style={{ marginTop: 64 }}>
+          <SectionHead num="IV" label="Как подают разные источники" sub="фрейминг-анализ" />
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {framings.map((f, i) => (
+              <div key={i} style={{
+                display: 'grid',
+                gridTemplateColumns: '160px 1fr',
+                gap: 24,
+                padding: '22px 0',
+                borderTop: i === 0 ? '1px solid #1A1815' : '0.5px solid rgba(26,24,21,0.2)',
+              }}>
+                <div>
+                  <ClusterTag cluster={f.cluster} big />
+                </div>
+                <div>
+                  <div style={{ fontSize: 15.5, lineHeight: 1.5, marginBottom: 14 }}>
+                    {f.narrative}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 18, fontSize: 13, lineHeight: 1.5 }}>
+                    <div>
+                      <div className="trng-caps" style={{ fontSize: 9, opacity: 0.6, marginBottom: 4 }}>подчёркивают</div>
+                      <div>{f.emphasis}</div>
+                    </div>
+                    <div>
+                      <div className="trng-caps" style={{ fontSize: 9, color: '#A63D2A', marginBottom: 4 }}>умалчивают</div>
+                      <div style={{ opacity: 0.85 }}>{f.omissions}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div className="trng-rule" />
+          </div>
+        </div>
+      )}
+
+      {/* ========== MANIPULATION FLAGS ========== */}
+      {manipulation_flags.length > 0 && (
+        <div style={{ marginTop: 64 }}>
+          <SectionHead num="V" label="Флаги манипуляции" sub={`${manipulation_flags.length} шт.`} accent />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+            {manipulation_flags.map((m, i) => (
+              <div key={i} style={{
+                padding: '18px 20px',
+                border: `1px solid #A63D2A`,
+                background: 'rgba(166,61,42,0.04)',
+                position: 'relative',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                  <div className="trng-caps" style={{ fontSize: 10, color: '#A63D2A' }}>
+                    ⚑ {FLAG_LABELS[m.type] || m.type}
+                  </div>
+                  <span className="trng-mono" style={{ fontSize: 10, opacity: 0.6 }}>
+                    sev {m.severity || '—'}/5
+                  </span>
+                </div>
+                <div style={{ fontSize: 14, lineHeight: 1.5, marginTop: 8 }}>{m.description}</div>
+                {m.example && (
+                  <div style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 10, padding: '8px 12px', background: 'rgba(26,24,21,0.06)', borderLeft: '2px solid #A63D2A', fontStyle: 'italic' }}>
+                    «{m.example}»
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ========== OPEN QUESTIONS ========== */}
+      {open_questions.length > 0 && (
+        <div style={{ marginTop: 64 }}>
+          <SectionHead num="VI" label="Открытые вопросы" sub="что ещё неясно" />
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {open_questions.map((q, i) => (
+              <li key={i} style={{
+                display: 'flex', gap: 16, padding: '14px 0',
+                borderBottom: '0.5px solid rgba(26,24,21,0.2)',
+              }}>
+                <span className="trng-mono" style={{ fontSize: 11, opacity: 0.45, flexShrink: 0, width: 24 }}>
+                  ?.{String(i+1).padStart(2, '0')}
+                </span>
+                <span style={{ fontSize: 15, lineHeight: 1.5, fontStyle: 'italic' }}>{q}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* ========== RAW JSON ========== */}
+      {showRaw && (
+        <div style={{ marginTop: 48, padding: 20, background: '#1A1815', color: '#F4EFE4' }}>
+          <div className="trng-caps" style={{ fontSize: 10, opacity: 0.6, marginBottom: 10 }}>raw response</div>
+          <pre className="trng-mono" style={{ fontSize: 11, lineHeight: 1.5, overflow: 'auto', maxHeight: 400 }}>
+            {JSON.stringify(result, null, 2)}
+          </pre>
+        </div>
+      )}
+    </article>
+  );
+}
+
+// ============================================================
+//  SUBCOMPONENTS
+// ============================================================
+function SectionHead({ num, label, sub, accent }) {
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 14 }}>
+        <span className="trng-display" style={{
+          fontSize: 28,
+          fontVariationSettings: '"opsz" 144, "wght" 300',
+          color: accent ? '#A63D2A' : '#1A1815',
+          fontStyle: 'italic',
+        }}>
+          {num}
+        </span>
+        <span className="trng-caps" style={{ fontSize: 11, color: accent ? '#A63D2A' : '#1A1815' }}>
+          {label}
+        </span>
+        {sub && <span className="trng-mono" style={{ fontSize: 11, opacity: 0.5, marginLeft: 'auto' }}>{sub}</span>}
+      </div>
+      <div className="trng-rule" style={{ borderColor: accent ? '#A63D2A' : '#1A1815', marginBottom: 14 }} />
+    </>
+  );
+}
+
+function ClusterTag({ cluster, big }) {
+  const m = CLUSTER_META[cluster] || CLUSTER_META.other;
+  return (
+    <span className="trng-caps" style={{
+      fontSize: big ? 11 : 9,
+      color: m.ink,
+      border: `1px solid ${m.ink}`,
+      padding: big ? '4px 10px' : '2px 7px',
+      background: 'transparent',
+      display: 'inline-block',
+    }}>
+      {big ? m.label : m.short}
+    </span>
+  );
+}
+
+function ConfidenceMeter({ value }) {
+  const v = Math.max(0, Math.min(100, value ?? 0));
+  const color = v >= 85 ? '#3B5E3C' : v >= 65 ? '#1A1815' : v >= 50 ? '#A66A1F' : '#A63D2A';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+      <div style={{ width: 80, height: 4, background: 'rgba(26,24,21,0.12)', position: 'relative' }}>
+        <div style={{ width: `${v}%`, height: '100%', background: color }} />
+      </div>
+      <span className="trng-mono" style={{ fontSize: 11, fontWeight: 500, color, minWidth: 30, textAlign: 'right' }}>
+        {v}%
+      </span>
+    </div>
+  );
+}
+
+function EmptyRow({ text }) {
+  return <li style={{ padding: '18px 0', fontSize: 14, fontStyle: 'italic', opacity: 0.5 }}>{text}</li>;
+}

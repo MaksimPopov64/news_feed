@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NewsTriangulator</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #222636;
+      --border: #2d3148;
+      --accent: #6366f1;
+      --accent-dim: #4f52c0;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 20px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    .logo { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    .logo span { color: var(--accent); }
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      background: var(--surface2);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+    #ollama-status {
+      margin-left: auto;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    .dot.ok { background: var(--green); }
+    .dot.err { background: var(--red); }
+
+    /* ── Layout ── */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 32px;
+    }
+
+    /* ── Search ── */
+    .search-block {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    .search-block h1 {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      margin-bottom: 10px;
+    }
+    .search-block h1 em { color: var(--accent); font-style: normal; }
+    .search-block p {
+      color: var(--text-dim);
+      font-size: 15px;
+      margin-bottom: 28px;
+    }
+    .search-form {
+      display: flex;
+      gap: 10px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    input[type="text"] {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 14px 18px;
+      border-radius: var(--radius);
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 14px 28px;
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      white-space: nowrap;
+    }
+    button.primary:hover { background: var(--accent-dim); }
+    button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Progress ── */
+    #progress-block {
+      display: none;
+      margin-bottom: 40px;
+    }
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 560px;
+      margin: 0 auto;
+    }
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      transition: all 0.3s;
+    }
+    .step.active { border-color: var(--accent); }
+    .step.done { border-color: var(--green); }
+    .step-icon {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--surface2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px;
+      flex-shrink: 0;
+      transition: all 0.3s;
+    }
+    .step.active .step-icon { background: var(--accent); }
+    .step.done .step-icon { background: var(--green); }
+    .step-text { font-size: 14px; color: var(--text-dim); }
+    .step.active .step-text, .step.done .step-text { color: var(--text); }
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Results ── */
+    #results-block { display: none; }
+
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Stats row */
+    .stats-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .stat-card {
+      flex: 1;
+      min-width: 120px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+    }
+    .stat-num { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .stat-label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+    /* Sentiment bars */
+    .tone-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .tone-label { width: 90px; font-size: 13px; color: var(--text-dim); text-align: right; }
+    .bar-track {
+      flex: 1; height: 8px;
+      background: var(--surface2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 4px;
+      transition: width 0.8s ease;
+    }
+    .bar-fill.pos { background: var(--green); }
+    .bar-fill.neu { background: var(--yellow); }
+    .bar-fill.neg { background: var(--red); }
+    .tone-count { width: 30px; font-size: 13px; color: var(--text-dim); }
+
+    /* Entities */
+    .entities-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .entity-tag {
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .entity-type { color: var(--text-muted); font-size: 10px; }
+    .entity-count {
+      background: var(--accent);
+      color: #fff;
+      border-radius: 10px;
+      padding: 1px 6px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    /* Sources table */
+    .sources-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 8px;
+    }
+    .source-chip {
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .tone-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* Report */
+    .report-text {
+      font-size: 15px;
+      line-height: 1.75;
+      color: var(--text-dim);
+      white-space: pre-wrap;
+    }
+    .report-text strong { color: var(--text); }
+
+    /* Articles list */
+    .articles-list { display: flex; flex-direction: column; gap: 10px; }
+    .article-item {
+      padding: 14px 16px;
+      border-radius: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+    }
+    .article-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+    .article-meta { font-size: 12px; color: var(--text-muted); }
+    .article-meta a { color: var(--accent); text-decoration: none; }
+
+    /* Error */
+    .error-box {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      color: #fca5a5;
+      font-size: 14px;
+    }
+
+    /* Collapsible */
+    details > summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-size: 13px;
+      margin-top: 16px;
+      user-select: none;
+    }
+    details[open] > summary { margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">News<span>Triangulator</span></div>
+  <span class="badge">локальный</span>
+  <div id="ollama-status">
+    <div class="dot" id="ollama-dot"></div>
+    <span id="ollama-text">проверка...</span>
+  </div>
+</header>
+
+<main>
+  <!-- Search -->
+  <div class="search-block">
+    <h1>Триангуляция <em>новостей</em></h1>
+    <p>Мультиисточниковый анализ: факты, тональность, заинтересованные стороны</p>
+    <form class="search-form" id="search-form">
+      <input
+        type="text"
+        id="query-input"
+        placeholder="Например: запуск новой линии метро"
+        autocomplete="off"
+      />
+      <button type="submit" class="primary" id="search-btn">Анализировать</button>
+    </form>
+  </div>
+
+  <!-- Progress -->
+  <div id="progress-block">
+    <div class="steps">
+      <div class="step" id="step-1">
+        <div class="step-icon" id="icon-1">1</div>
+        <div class="step-text" id="text-1">Сбор статей из источников</div>
+      </div>
+      <div class="step" id="step-2">
+        <div class="step-icon" id="icon-2">2</div>
+        <div class="step-text" id="text-2">Сравнение и кластеризация источников</div>
+      </div>
+      <div class="step" id="step-3">
+        <div class="step-icon" id="icon-3">3</div>
+        <div class="step-text" id="text-3">Анализ тональности (rubert)</div>
+      </div>
+      <div class="step" id="step-4">
+        <div class="step-icon" id="icon-4">4</div>
+        <div class="step-text" id="text-4">Граф знаний и «Кому выгодно?»</div>
+      </div>
+      <div class="step" id="step-5">
+        <div class="step-icon" id="icon-5">5</div>
+        <div class="step-text" id="text-5">Генерация отчёта через LLM</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results-block">
+
+    <!-- Stats -->
+    <div class="section">
+      <div class="section-title">📊 Обзор</div>
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-num" id="stat-articles">—</div>
+          <div class="stat-label">статей собрано</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="stat-sources">—</div>
+          <div class="stat-label">источников</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="stat-clusters">—</div>
+          <div class="stat-label">групп событий</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="stat-agreement">—</div>
+          <div class="stat-label">согласованность</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sentiment -->
+    <div class="section">
+      <div class="section-title">🎭 Тональность публикаций</div>
+      <div id="sentiment-bars"></div>
+      <div id="source-tones" style="margin-top:18px;">
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">По источникам</div>
+        <div class="sources-grid" id="sources-grid"></div>
+      </div>
+    </div>
+
+    <!-- Entities -->
+    <div class="section">
+      <div class="section-title">🔗 Ключевые акторы</div>
+      <div class="entities-list" id="entities-list"></div>
+    </div>
+
+    <!-- Cui bono -->
+    <div class="section">
+      <div class="section-title">🎯 Кому выгодно?</div>
+      <div class="report-text" id="cui-bono-text"></div>
+    </div>
+
+    <!-- Report -->
+    <div class="section">
+      <div class="section-title">📄 Итоговый отчёт</div>
+      <div class="report-text" id="report-text"></div>
+    </div>
+
+    <!-- Articles -->
+    <div class="section">
+      <details>
+        <summary>Показать исходные статьи</summary>
+        <div class="articles-list" id="articles-list"></div>
+      </details>
+    </div>
+
+  </div>
+</main>
+
+<script>
+const TONE_COLORS = { 'позитивная': '#22c55e', 'нейтральная': '#f59e0b', 'негативная': '#ef4444' };
+const TONE_CLASSES = { 'позитивная': 'pos', 'нейтральная': 'neu', 'негативная': 'neg' };
+
+async function checkOllama() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const dot = document.getElementById('ollama-dot');
+    const txt = document.getElementById('ollama-text');
+    if (d.ollama) {
+      dot.className = 'dot ok';
+      txt.textContent = 'Ollama онлайн';
+    } else {
+      dot.className = 'dot err';
+      txt.textContent = 'Ollama офлайн';
+    }
+  } catch { }
+}
+
+checkOllama();
+
+function setStep(n, state, msg) {
+  const el = document.getElementById(`step-${n}`);
+  const icon = document.getElementById(`icon-${n}`);
+  const text = document.getElementById(`text-${n}`);
+  el.className = `step ${state}`;
+  if (state === 'active') {
+    icon.innerHTML = '<div class="spinner"></div>';
+  } else if (state === 'done') {
+    icon.textContent = '✓';
+  } else {
+    icon.textContent = String(n);
+  }
+  if (msg) text.textContent = msg;
+}
+
+function resetSteps() {
+  for (let i = 1; i <= 5; i++) setStep(i, '');
+}
+
+function renderResult(data) {
+  // Stats
+  const articles = data.articles || [];
+  const sources = [...new Set(articles.map(a => a.source))];
+  document.getElementById('stat-articles').textContent = data.analysis.total_articles ?? articles.length;
+  document.getElementById('stat-sources').textContent = sources.length;
+  document.getElementById('stat-clusters').textContent = (data.analysis.clusters || []).length;
+  const agr = data.analysis.agreement_score ?? 0;
+  document.getElementById('stat-agreement').textContent = Math.round(agr * 100) + '%';
+
+  // Sentiment bars
+  const summary = data.sentiment?.summary || {};
+  const total = Object.values(summary).reduce((a, b) => a + b, 1);
+  const barsEl = document.getElementById('sentiment-bars');
+  barsEl.innerHTML = ['позитивная', 'нейтральная', 'негативная'].map(tone => {
+    const count = summary[tone] || 0;
+    const pct = Math.round(count / total * 100);
+    const cls = TONE_CLASSES[tone];
+    return `<div class="tone-bar">
+      <div class="tone-label">${tone.charAt(0).toUpperCase()+tone.slice(1)}</div>
+      <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+      <div class="tone-count">${count}</div>
+    </div>`;
+  }).join('');
+
+  // Sources
+  const perSource = data.sentiment?.per_source || {};
+  const grid = document.getElementById('sources-grid');
+  grid.innerHTML = Object.entries(perSource).map(([src, r]) => {
+    const color = TONE_COLORS[r.label] || '#94a3b8';
+    return `<div class="source-chip">
+      <div class="tone-dot" style="background:${color}"></div>
+      <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${src}</span>
+    </div>`;
+  }).join('');
+
+  // Entities
+  const entities = data.stakeholders?.top_entities || [];
+  const entEl = document.getElementById('entities-list');
+  entEl.innerHTML = entities.map(e => `
+    <div class="entity-tag">
+      <span>${e.entity}</span>
+      <span class="entity-type">${e.type}</span>
+      <span class="entity-count">${e.mentions}</span>
+    </div>
+  `).join('');
+
+  // Cui bono
+  document.getElementById('cui-bono-text').textContent = data.stakeholders?.cui_bono || '—';
+
+  // Report
+  const reportEl = document.getElementById('report-text');
+  const raw = data.report || '—';
+  reportEl.innerHTML = raw
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+
+  // Articles
+  const listEl = document.getElementById('articles-list');
+  listEl.innerHTML = articles.slice(0, 30).map(a => `
+    <div class="article-item">
+      <div class="article-title">${a.title || '—'}</div>
+      <div class="article-meta">
+        <strong>${a.source}</strong>
+        ${a.url ? `· <a href="${a.url}" target="_blank" rel="noopener">открыть</a>` : ''}
+        ${a.published ? `· ${a.published.slice(0,10)}` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+document.getElementById('search-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const query = document.getElementById('query-input').value.trim();
+  if (!query) return;
+
+  const btn = document.getElementById('search-btn');
+  btn.disabled = true;
+  btn.textContent = 'Анализирую...';
+
+  document.getElementById('progress-block').style.display = 'block';
+  document.getElementById('results-block').style.display = 'none';
+  resetSteps();
+
+  try {
+    const resp = await fetch('/api/analyze/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        const lines = part.trim().split('\n');
+        let eventType = 'message';
+        let dataLine = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7);
+          if (line.startsWith('data: ')) dataLine = line.slice(6);
+        }
+        if (!dataLine) continue;
+        const data = JSON.parse(dataLine);
+
+        if (eventType === 'progress') {
+          const step = data.step;
+          if (data.done) {
+            setStep(step, 'done', data.message);
+          } else {
+            setStep(step, 'active', data.message);
+          }
+        } else if (eventType === 'result') {
+          document.getElementById('results-block').style.display = 'block';
+          renderResult(data);
+          document.getElementById('results-block').scrollIntoView({ behavior: 'smooth' });
+        } else if (eventType === 'error') {
+          document.getElementById('progress-block').innerHTML =
+            `<div class="error-box">Ошибка: ${data.message}</div>`;
+        }
+      }
+    }
+  } catch (err) {
+    document.getElementById('progress-block').innerHTML =
+      `<div class="error-box">Ошибка соединения: ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Анализировать';
+  }
+});
+</script>
+</body>
+</html>
